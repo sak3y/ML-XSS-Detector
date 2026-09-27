@@ -42,6 +42,42 @@ Two details worth knowing:
 
 All randomised operations use `random_state=42`.
 
+## Design decisions
+
+Each choice below has an alternative that was rejected, and a reason.
+
+**Classical ML over deep learning.** 200 training snippets is far below what a transformer or LSTM needs to generalise on code. TF-IDF with a linear model is the appropriate capacity for the data available, and its coefficients are inspectable, which matters when the output is a security claim someone has to act on.
+
+**Logistic regression and random forest, both.** LR gives a linear, readable decision boundary over token weights. RF catches token interactions LR cannot. Running both shows whether the extra capacity buys anything here. It does not: RF scores lower on recall, which is consistent with 200 samples being too few for the ensemble to beat a linear fit.
+
+**Underscore rewriting rather than a custom analyzer.** `location.search` split into `location` and `search` loses the source. Both halves appear in safe code; only the pair is evidence. Rewriting to `location_search` before vectorisation keeps the pair intact while still using the stock TF-IDF tokeniser, so the transformation is one visible preprocessing step instead of a bespoke regex analyzer buried in the vectoriser config.
+
+**Stratifying by task category, not by label.** Stratifying on the label balances vulnerable and safe but lets a single task category flood the test set, which inflates scores for whatever that category happens to reward. Stratifying on category keeps the task mix representative and, because categories are near-balanced internally, keeps the label ratio close enough.
+
+**Nine rules grouped by sink family, not by source.** Sinks are a closed, enumerable set: HTML injection points, dynamic code execution, and framework-specific escapes. Sources are open-ended. Writing rules against sinks gives bounded coverage that can be stated precisely; writing them against sources gives an endless list with no completion criterion.
+
+**Excluding hardcoded string assignments where the AST allows it.** `el.innerHTML = "<b>hello</b>"` is a sink with no source and flagging it is noise. The exclusion is done structurally rather than by string matching so it does not misfire on concatenation that happens to start with a literal.
+
+**`javascript:` URL sinks left out of scope, and documented.** Location assignment and anchor `href` rewrites are a distinct sink family that would need its own rules and its own labelled examples. Shipping nine rules that are tested beats eleven where two are guesses. The gap is recorded in `xss.yml` rather than left implicit.
+
+**Prompt-generated data, with one real-world category as a control.** Coverage of 18 task categories with a known vulnerable/safe balance is not obtainable from public repositories in the time available. Generating the bulk of the set makes coverage controllable; the GitHub category exists so the subpopulation split can show whether performance holds on code that was not generated. The trade-off is that generated snippets are cleaner and more uniform than production JavaScript.
+
+**Source, sink and a written justification stored per row.** A bare label cannot be audited. Recording which source reaches which sink, and why that makes the snippet vulnerable, makes every label checkable after the fact and forces the criterion to be applied consistently rather than by feel.
+
+**Recall weighted over precision when reading the results.** A missed DOM XSS reaches production. A false positive costs a developer a few minutes. F1 is reported as the headline because it is comparable across detectors, but the ranking decision follows recall, which is why Semgrep at 0.920 recall is preferred over LR at 1.000 precision.
+
+**Semgrep run from the CLI, not invoked from the notebook.** Keeps the scan reproducible outside Python and makes the JSON an inspectable artefact rather than a hidden in-process call. The cost is a manual step that can silently no-op, which is what the verification command below exists to catch.
+
+**Statistical tests rather than a bare comparison of point estimates.** On a 50-snippet test set the difference between 0.939 and 0.913 F1 is within noise unless it is tested. Bootstrap CIs give the spread, McNemar's test compares the detectors on the same items, and the false-negative overlap is reported because it determines whether ensembling would help. It would not.
+
+## Limitations
+
+- **50-snippet test set.** Precision of 1.000 rests on roughly 21 predictions; one false positive moves it to 0.95. The bootstrap CIs in the notebook are the honest version of every number in the results table.
+- **Single labeller.** No inter-annotator agreement was measured. A second labeller over a sample is the first thing this needs.
+- **Seventeen of 18 categories are generated.** Production JavaScript is messier, longer, and mixes concerns within a file. The subpopulation split is a check on this, not a fix for it.
+- **Semgrep is not trained,** so it never saw the 200 training snippets. The comparison is fair on the held-out test set, but the two approaches are not being asked for the same thing: one encodes domain knowledge up front, the other has to infer it from 200 examples.
+- **Rules cover three sink families.** `javascript:` URL sinks, `srcdoc` via `setAttribute`, and DOM clobbering are out of scope.
+
 ## Reproduction
 
 Python 3.12. Exact versions are pinned in `requirements.txt`.
